@@ -1,0 +1,11 @@
+README
+setup.cfg
+setup.py
+py_watson_cloud_publisher/_init.py
+py_watson_cloud_publisher/publish.py
+py_watson_cloud_publisher.egg-info/PKG-INFO
+py_watson_cloud_publisher.egg-info/SOURCES.txt
+py_watson_cloud_publisher.egg-info/dependency_links.txt
+py_watson_cloud_publisher.egg-info/not-zip-safe
+py_watson_cloud_publisher.egg-info/requires.txt
+py_watson_cloud_publisher.egg-info/top_level.txt

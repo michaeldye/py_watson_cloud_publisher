@@ -1,0 +1,18 @@
+Metadata-Version: 1.1
+Name: py-watson-cloud-publisher
+Version: 0.1.0
+Summary: Publishing library for arbitrary JSON data to both or one of IBM Watson Cloud WIoTP MQTT service, IBM Cloudant
+Home-page: https://github.com/open-horizon/example/...
+Author: Christopher Dye
+Author-email: dyec@us.ibm.com
+License: Apache License 2.0
+Description-Content-Type: UNKNOWN
+Description: ...
+        
+        
+Keywords: setup
+distutils
+Platform: UNKNOWN
+Classifier: Development Status :: 4 - Beta
+Classifier: Programming Language :: Python
+Classifier: Operating System :: POSIX :: Linux
