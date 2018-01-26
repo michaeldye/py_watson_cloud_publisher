@@ -60,7 +60,9 @@ class CachePublisher(object):
         else:
             self.logger = logger
 
-        # TODO: add some error handling for incoming args
+        # TODO: add more error handling for incoming args
+        if mqtt_pub_interval < 0 and cloudant_pub_interval < 0:
+            raise SystemError("Illegal state: no configured publish interval")
 
         # bookkeeping
         self._mqtt_last_pub = datetime.utcnow()
@@ -82,6 +84,7 @@ class CachePublisher(object):
         self.cloudant_username = cloudant_connector_opts['username']
         self.cloudant_password = cloudant_connector_opts['password']
         self.cloudant_url = cloudant_connector_opts['url']
+        self.cloudant_db = cloudant_connector_opts['db']
 
         def sani_auth_fn(auth):
             auth["password"] = REDACTED_PASS_EMPTY if not auth['password'] else REDACTED_PASS_SET
@@ -91,46 +94,49 @@ class CachePublisher(object):
         self.logger.info(str.format("CachePublisher configuration for cloudant:: cloudant_pub_interval: {}, cloudant_pub_max: {}; cloudant_username: {}, cloudant_password: {}, cloudant_url: {}", self._cloudant_pub_interval, self._cloudant_pub_max, self.cloudant_username, REDACTED_PASS_EMPTY if not self.cloudant_password else REDACTED_PASS_SET, self.cloudant_url))
 
     def _collect_data_and_pub(self, now, last_pub, pub_interval, pub_max, publisher):
-        elapsed = (now-last_pub).total_seconds()
-        if elapsed > pub_interval:
-            dist_factor = math.ceil(len(self.cache) / (pub_max * (elapsed / pub_interval)))
-            self.logger.debug('Dist calc from length: %d, given elapsed time: %s. Dist factor: %d', len(self.cache), elapsed, dist_factor)
-
-            # just a list of data (the values from self.cache) where the publishing function's name is not in pub_by
-            filtered_cache = dict({k:v for (k,v) in self.cache.items() if publisher.__qualname__ not in v['pub_by']})
-            self.logger.debug('filtered_cache: %s', filtered_cache)
-
-            # data in sub is proper subset of filtered_cache cache with key still ts
-            sub = dict([p for idx, p in enumerate(filtered_cache.items()) if (idx % dist_factor == 0)])
-            self.logger.debug('sub: %s', sub)
-
-            #self.logger.debug('Publish interval reached. Calculated distribution factor: %f. Sublist: %s', dist, sub)
-            cloned = copy.deepcopy([v["datum"] for (k,v) in  sub.items()])
-            self.logger.debug('cloned: %s', cloned)
-
-            # keys only for lookup convenience
-            cloned_ts = sub.keys()
-            self.logger.debug('cloned_ts: %s', cloned_ts)
-
-            # mark all pub_by with publisher name in self.cache; if it was in cloned subset
-            for k,v in self.cache.items():
-                if k in cloned_ts:
-                    self.cache[k]['pub_by'].append(publisher.__qualname__)
-            self.logger.debug('updated cache: %s', self.cache)
-
-            if len(cloned) == 0:
-                self.logger.info('No data to publish, skipping starting publisher processes')
-            else:
-                process = self._ctx.Process(target=publisher, args=(cloned,))
-                process.daemon = True
-                process.start() # all forked processes will get joined at parent process shutdown
-                self.logger.debug('Started publishing subprocess with cloned list (%d) given (%d)', len(cloned), len(self.cache))
-
-            # return time to update
-            return now
-            # self.logger.debug('Complete cache (%d): %s', len(self.cache), self.cache)
+        if pub_interval < 0:
+            self.logger.debug("Publishing disabled, skipping processing")
         else:
-            return last_pub
+            elapsed = (now-last_pub).total_seconds()
+            if elapsed > pub_interval:
+                dist_factor = math.ceil(len(self.cache) / (pub_max * (elapsed / pub_interval)))
+                self.logger.debug('Dist calc from length: %d, given elapsed time: %s. Dist factor: %d', len(self.cache), elapsed, dist_factor)
+
+                # just a list of data (the values from self.cache) where the publishing function's name is not in pub_by
+                filtered_cache = dict({k:v for (k,v) in self.cache.items() if publisher.__qualname__ not in v['pub_by']})
+                self.logger.debug('filtered_cache: %s', filtered_cache)
+
+                # data in sub is proper subset of filtered_cache cache with key still ts
+                sub = dict([p for idx, p in enumerate(filtered_cache.items()) if (idx % dist_factor == 0)])
+                self.logger.debug('sub: %s', sub)
+
+                #self.logger.debug('Publish interval reached. Calculated distribution factor: %f. Sublist: %s', dist, sub)
+                cloned = copy.deepcopy([v["datum"] for (k,v) in  sub.items()])
+                self.logger.debug('cloned: %s', cloned)
+
+                # keys only for lookup convenience
+                cloned_ts = sub.keys()
+                self.logger.debug('cloned_ts: %s', cloned_ts)
+
+                # mark all pub_by with publisher name in self.cache; if it was in cloned subset
+                for k,v in self.cache.items():
+                    if k in cloned_ts:
+                        self.cache[k]['pub_by'].append(publisher.__qualname__)
+                self.logger.debug('updated cache: %s', self.cache)
+
+                if len(cloned) == 0:
+                    self.logger.info('No data to publish, skipping starting publisher processes')
+                else:
+                    process = self._ctx.Process(target=publisher, args=(cloned,))
+                    process.daemon = True
+                    process.start() # all forked processes will get joined at parent process shutdown
+                    self.logger.debug('Started publishing subprocess with cloned list (%d) given (%d)', len(cloned), len(self.cache))
+
+                # return time to update
+                return now
+                # self.logger.debug('Complete cache (%d): %s', len(self.cache), self.cache)
+            else:
+                return last_pub
 
     def write_and_pub(self, datum):
         """ Data is an object suitable for serialization using json. Upon write the data will be stamped with the time with microsecond resolution. This is a blocking function: it will not return until cache can be safely written to again."""
@@ -144,7 +150,7 @@ class CachePublisher(object):
         datum["ts"] = nowStr
         self.cache[nowStr] = {'datum': datum, 'pub_by': []}
 
-        self.logger.info('Added datum: %s. Cache size: %d', datum, len(self.cache))
+        self.logger.debug('Added datum: %s. Cache size: %d', datum, len(self.cache))
 
         # so we know when to clear the cache
         longest_interval, longest_last_pub = (self._mqtt_pub_interval,self._mqtt_last_pub) if (self._mqtt_pub_interval > self._cloudant_pub_interval) else (self._cloudant_pub_interval,self._cloudant_last_pub)
@@ -164,8 +170,8 @@ class CachePublisher(object):
             self.logger.debug(str.format('Publishing data to cloudant: {}', data))
             client = Cloudant(self.cloudant_username, self.cloudant_password, url=self.cloudant_url, connect=True, auto_renew=True)
 
-            testdb = client['test']
-            testdb.bulk_docs(data)
+            db = client[self.cloudant_db]
+            db.bulk_docs(data)
 
             self.logger.info("Sent %d records to cloudant", len(data))
         except Exception as ex:
@@ -187,6 +193,5 @@ class CachePublisher(object):
             publish.multiple(msgs=msgs, hostname=self.mqtt_hostname, port=self.mqtt_port, client_id=self.mqtt_client_id, keepalive=60, will=None, auth=self.mqtt_auth, tls=self.mqtt_tls, protocol=mqtt.MQTTv311, transport="tcp")
 
             self.logger.info("Sent %d records to mqtt broker for publishing", len(data))
-
         except Exception as ex:
             self.logger.exception(ex)
